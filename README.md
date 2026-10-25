@@ -101,5 +101,4 @@ Run `npm test` in both `client` and `server`, and `npm run build` in `client`. C
 - Audit trail and alert delivery
 - E2E tests and deployment-specific manifests
 
-## License
-MIT — see `LICENSE`.
+
