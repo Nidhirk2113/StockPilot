@@ -21,3 +21,18 @@ model Product {
   @@index([category])
   @@index([stock, reorderAt])
 }
+
+model SalesRecord {
+  id         String   @id @default(cuid())
+  saleDate   DateTime
+  productName String
+  category   String   @default("Uncategorized")
+  unitsSold  Int
+  revenue    Decimal? @db.Decimal(14, 2)
+  source     String   @default("CSV upload")
+  createdAt  DateTime @default(now())
+
+  @@index([saleDate])
+  @@index([productName])
+  @@index([category, saleDate])
+}
