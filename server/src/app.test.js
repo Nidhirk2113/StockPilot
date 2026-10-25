@@ -5,7 +5,16 @@ import { createApp } from './app.js';
 
 function fixture() {
   const items = [{ id: 'prod-1', name: 'Keyboard', sku: 'KEY-1', category: 'Electronics', price: 50, stock: 4, reorderAt: 5, updatedAt: new Date() }];
+  const sales = [];
   const prisma = {
+    salesRecord: {
+      findMany: async () => sales,
+      createManyAndReturn: async ({ data }) => {
+        const created = data.map((record, index) => ({ id: `sale-${index + 1}`, ...record }));
+        sales.push(...created);
+        return created;
+      }
+    },
     product: {
       findMany: async ({ where = {} } = {}) => items.filter(item => {
         if (where.category && item.category !== where.category) return false;
@@ -31,3 +40,29 @@ test('creates a valid product', async () => { const { app } = fixture(); const r
 test('prevents stock from becoming negative', async () => { const { app } = fixture(); const response = await request(app).patch('/api/products/prod-1/stock').send({ delta: -10 }).expect(400); assert.match(response.body.error, /negative/); });
 test('returns 404 for an unknown product during stock adjustment', async () => { const { app } = fixture(); await request(app).patch('/api/products/missing/stock').send({ delta: 1 }).expect(404); });
 test('deletes an existing product', async () => { const { app, items } = fixture(); await request(app).delete('/api/products/prod-1').expect(204); assert.equal(items.length, 0); });
+
+test('imports validated sales records and returns normalized data', async () => {
+  const { app } = fixture();
+  const response = await request(app).post('/api/sales/import').send({ records: [
+    { date: '2026-10-01', product: 'Wireless Mouse', category: 'Electronics', unitsSold: 12, revenue: 479.88, source: 'CSV upload' }
+  ] }).expect(201);
+  assert.equal(response.body.imported, 1);
+  assert.equal(response.body.data[0].product, 'Wireless Mouse');
+  assert.equal(response.body.data[0].revenue, 479.88);
+});
+
+test('rejects sales imports with invalid quantities', async () => {
+  const { app } = fixture();
+  await request(app).post('/api/sales/import').send({ records: [
+    { date: '2026-10-01', product: 'Wireless Mouse', category: 'Electronics', unitsSold: -2, revenue: 10 }
+  ] }).expect(400);
+});
+
+test('lists sales records for monitoring', async () => {
+  const { app } = fixture();
+  await request(app).post('/api/sales/import').send({ records: [
+    { date: '2026-10-01', product: 'Wireless Mouse', category: 'Electronics', unitsSold: 12, revenue: 479.88 }
+  ] }).expect(201);
+  const response = await request(app).get('/api/sales').expect(200);
+  assert.equal(response.body.data[0].product, 'Wireless Mouse');
+});

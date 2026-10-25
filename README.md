@@ -5,7 +5,10 @@
 > Status: portfolio-ready starter. The frontend includes seeded demo data for a polished first run. Connect PostgreSQL and configure the API to persist real data before production use.
 
 ## Features
-- Responsive analytics dashboard with inventory KPIs and weekly movement visualization
+- Responsive inventory dashboard with inventory KPIs, weekly stock movement, and low-stock alerts
+- Sales intelligence page with monthly revenue, units sold, top products, and recent imported records
+- CSV sales imports with row validation, error reporting, sample template download, and append-only history
+- Supports standard sales CSVs and the uploaded video-game sales schema (`Name`, `Genre`, `Year`, `Global_Sales`); `Global_Sales` is interpreted as millions of units, never currency
 - Product catalog with search, category filtering, stock status, and add-product flow
 - Low-stock and out-of-stock views
 - CSV export for the current product list
@@ -72,6 +75,22 @@ Open the URL printed by Vite (normally `http://localhost:5173`). The UI uses dem
 - `POST /api/products` — create a product (validated server-side)
 - `PATCH /api/products/:id/stock` — adjust stock by a signed integer `delta`
 - `DELETE /api/products/:id` — delete a product
+- `GET /api/sales` — retrieve persisted sales history
+- `POST /api/sales/import` — validate and append sales rows (up to 20,000 per request)
+
+## Sales CSV format
+
+The dashboard includes demo sales history for electronics such as studio headphones, mechanical keyboards, wireless mice, USB-C docks, webcams, and portable SSDs. Download the sample CSV directly from the Sales page. Standard uploads use these columns:
+
+```csv
+date,product,category,units_sold,revenue
+2026-10-01,Wireless Mouse,Electronics,12,479.88
+2026-10-02,Studio Headphones,Electronics,8,1199.92
+```
+
+`date`, `product`, and `units_sold` are required (a `year` column can stand in for `date`); `category` and `revenue` are optional. CSV uploads append to existing records rather than replacing them. Rows that fail validation are reported before import. When the revenue column is absent, units still count toward volume and rankings, but are excluded from revenue totals.
+
+The app also recognizes the `vgsales.csv`-style headers `Name`, `Genre`, `Year`, and `Global_Sales`. In that dataset, `Global_Sales` is measured in millions of game copies, so it is converted to units sold; it is not treated as money. Rows without a usable year are flagged and skipped.
 
 ## Deployment checklist
 1. Provision a managed PostgreSQL database and set `DATABASE_URL`.

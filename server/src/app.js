@@ -12,12 +12,20 @@ const productSchema = z.object({
   reorderAt: z.coerce.number().int().min(0).max(100000000).default(5)
 });
 const idSchema = z.string().min(1).max(100);
+const salesRecordSchema = z.object({
+  date: z.string().date(),
+  product: z.string().trim().min(1).max(160),
+  category: z.string().trim().min(1).max(80).default('Uncategorized'),
+  unitsSold: z.number().int().min(0).max(2147483647),
+  revenue: z.number().finite().min(0).max(1000000000000).nullable().optional(),
+  source: z.string().trim().min(1).max(120).default('CSV upload')
+});
 
 export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
   const app = express();
   app.use(helmet());
   app.use(cors({ origin: clientOrigin.split(',').map(value => value.trim()), methods: ['GET', 'POST', 'PATCH', 'DELETE'] }));
-  app.use(express.json({ limit: '32kb' }));
+  app.use(express.json({ limit: '8mb' }));
 
   app.get('/api/health', (_req, res) => res.json({ status: 'ok', service: 'stockpilot-api' }));
 
@@ -36,6 +44,52 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
       let products = await prisma.product.findMany({ where, orderBy: { updatedAt: 'desc' } });
       if (status === 'Low stock') products = products.filter(product => product.stock > 0 && product.stock <= product.reorderAt);
       return res.json({ data: products });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.get('/api/sales', async (_req, res, next) => {
+    try {
+      const records = await prisma.salesRecord.findMany({ orderBy: { saleDate: 'asc' }, take: 20000 });
+      return res.json({ data: records.map(record => ({
+        id: record.id,
+        date: record.saleDate.toISOString().slice(0, 10),
+        product: record.productName,
+        category: record.category,
+        unitsSold: record.unitsSold,
+        revenue: record.revenue === null ? null : Number(record.revenue),
+        source: record.source
+      })) });
+    } catch (error) {
+      return next(error);
+    }
+  });
+
+  app.post('/api/sales/import', async (req, res, next) => {
+    const parsed = z.object({ records: z.array(salesRecordSchema).min(1).max(20000) }).safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Sales import validation failed', details: parsed.error.flatten() });
+    try {
+      const records = await prisma.salesRecord.createManyAndReturn({
+        data: parsed.data.records.map(record => ({
+          saleDate: new Date(`${record.date}T00:00:00.000Z`),
+          productName: record.product,
+          category: record.category,
+          unitsSold: record.unitsSold,
+          revenue: record.revenue ?? null,
+          source: record.source
+        })),
+        select: { id: true, saleDate: true, productName: true, category: true, unitsSold: true, revenue: true, source: true }
+      });
+      return res.status(201).json({ imported: records.length, data: records.map(record => ({
+        id: record.id,
+        date: record.saleDate.toISOString().slice(0, 10),
+        product: record.productName,
+        category: record.category,
+        unitsSold: record.unitsSold,
+        revenue: record.revenue === null ? null : Number(record.revenue),
+        source: record.source
+      })) });
     } catch (error) {
       return next(error);
     }
