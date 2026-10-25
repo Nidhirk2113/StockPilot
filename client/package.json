@@ -15,7 +15,8 @@
     "react": "latest",
     "react-dom": "latest",
     "lucide-react": "latest",
-    "recharts": "latest"
+    "recharts": "latest",
+    "papaparse": "^5.5.3"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "latest",
