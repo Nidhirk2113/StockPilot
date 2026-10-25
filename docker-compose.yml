@@ -20,11 +20,20 @@ services:
     environment:
       DATABASE_URL: postgresql://stockpilot:${POSTGRES_PASSWORD:-stockpilot_dev_only}@db:5432/stockpilot?schema=public
       PORT: 5000
-      CLIENT_ORIGIN: http://localhost:5173
-    ports:
-      - "5000:5000"
+      CLIENT_ORIGIN: http://localhost
+    expose:
+      - "5000"
     depends_on:
       db:
         condition: service_healthy
+  client:
+    build:
+      context: ./client
+      args:
+        VITE_API_URL: /api
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
 volumes:
   stockpilot_pg:
