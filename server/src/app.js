@@ -87,6 +87,7 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
           });
           let productId = null;
           if (product) {
+            const stockBefore = product.stock;
             const updated = await tx.product.updateMany({
               where: { id: product.id, stock: { gte: row.unitsSold } },
               data: { stock: { decrement: row.unitsSold } }
@@ -99,7 +100,7 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
             productId = product.id;
             await tx.stockMovement.create({ data: {
               productId, type: 'SALE', quantity: -row.unitsSold,
-              stockBefore: product.stock, stockAfter: product.stock - row.unitsSold,
+              stockBefore, stockAfter: stockBefore - row.unitsSold,
               reference: batch.id, note: `Sales import: ${row.product}`
             } });
           }
