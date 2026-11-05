@@ -21,6 +21,21 @@ const salesRecordSchema = z.object({
   source: z.string().trim().min(1).max(120).default('CSV upload')
 });
 
+
+const historicalGameSaleSchema = z.object({
+  rank: z.number().int().positive(),
+  name: z.string().trim().min(1).max(255),
+  platform: z.string().trim().min(1).max(30),
+  year: z.number().int().min(1970).max(2100).nullable(),
+  genre: z.string().trim().min(1).max(80),
+  publisher: z.string().trim().max(160).nullable(),
+  naSales: z.number().finite().min(0).max(99999999.99),
+  euSales: z.number().finite().min(0).max(99999999.99),
+  jpSales: z.number().finite().min(0).max(99999999.99),
+  otherSales: z.number().finite().min(0).max(99999999.99),
+  globalSales: z.number().finite().min(0).max(99999999.99)
+});
+
 const productPayload = product => ({ ...product, price: Number(product.price) });
 const salesPayload = record => ({
   id: record.id,
@@ -63,6 +78,112 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
       const records = await prisma.salesRecord.findMany({ orderBy: { saleDate: 'asc' }, take: 20000 });
       return res.json({ data: records.map(salesPayload) });
     } catch (error) { return next(error); }
+  });
+
+
+  app.get('/api/historical-game-sales/status', async (_req, res, next) => {
+    try {
+      const [recordCount, latestImport] = await Promise.all([
+        prisma.historicalGameSale.count(),
+        prisma.historicalGameDatasetImport.findFirst({ orderBy: { createdAt: 'desc' } })
+      ]);
+      return res.json({
+        recordCount,
+        latestImport: latestImport ? {
+          fileName: latestImport.fileName,
+          recordCount: latestImport.recordCount,
+          importedAt: latestImport.createdAt
+        } : null
+      });
+    } catch (error) { return next(error); }
+  });
+
+  app.get('/api/historical-game-sales/analytics', async (_req, res, next) => {
+    try {
+      const records = await prisma.historicalGameSale.findMany({
+        select: {
+          year: true, genre: true, platform: true, publisher: true,
+          naSales: true, euSales: true, jpSales: true,
+          otherSales: true, globalSales: true
+        }
+      });
+      const sumBy = (key) => {
+        const grouped = new Map();
+        for (const row of records) {
+          const label = row[key] ?? 'Unknown';
+          grouped.set(label, (grouped.get(label) ?? 0) + Number(row.globalSales));
+        }
+        return [...grouped.entries()]
+          .map(([label, globalSales]) => ({ label: String(label), globalSales: Number(globalSales.toFixed(2)) }))
+          .sort((a, b) => b.globalSales - a.globalSales);
+      };
+      const totals = records.reduce((acc, row) => {
+        acc.naSales += Number(row.naSales);
+        acc.euSales += Number(row.euSales);
+        acc.jpSales += Number(row.jpSales);
+        acc.otherSales += Number(row.otherSales);
+        acc.globalSales += Number(row.globalSales);
+        return acc;
+      }, { naSales: 0, euSales: 0, jpSales: 0, otherSales: 0, globalSales: 0 });
+      const byYear = sumBy('year')
+        .filter(item => item.label !== 'Unknown')
+        .sort((a, b) => Number(a.label) - Number(b.label));
+      return res.json({
+        recordCount: records.length,
+        totals: Object.fromEntries(Object.entries(totals).map(([key, value]) => [key, Number(value.toFixed(2))])),
+        byYear,
+        byGenre: sumBy('genre'),
+        byPlatform: sumBy('platform').slice(0, 12),
+        byPublisher: sumBy('publisher').filter(item => item.label !== 'Unknown').slice(0, 10)
+      });
+    } catch (error) { return next(error); }
+  });
+
+  app.post('/api/historical-game-sales/import', async (req, res, next) => {
+    const parsed = z.object({
+      idempotencyKey: z.string().min(16).max(128),
+      fileName: z.string().trim().min(1).max(255).default('vgsales.csv'),
+      records: z.array(historicalGameSaleSchema).min(1).max(20000)
+    }).safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        error: 'Historical dataset validation failed',
+        details: parsed.error.flatten()
+      });
+    }
+
+    try {
+      const result = await prisma.$transaction(async tx => {
+        const datasetImport = await tx.historicalGameDatasetImport.create({
+          data: {
+            idempotencyKey: parsed.data.idempotencyKey,
+            fileName: parsed.data.fileName,
+            recordCount: parsed.data.records.length
+          }
+        });
+        const created = await tx.historicalGameSale.createMany({
+          data: parsed.data.records.map(record => ({
+            ...record,
+            datasetImportId: datasetImport.id
+          }))
+        });
+        return { datasetImport, count: created.count };
+      });
+
+      return res.status(201).json({
+        imported: result.count,
+        dataset: {
+          fileName: result.datasetImport.fileName,
+          recordCount: result.count,
+          importedAt: result.datasetImport.createdAt
+        }
+      });
+    } catch (error) {
+      if (error.code === 'P2002') {
+        return res.status(409).json({ error: 'This historical dataset file has already been imported.' });
+      }
+      return next(error);
+    }
   });
 
   app.post('/api/sales/import', async (req, res, next) => {
