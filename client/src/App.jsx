@@ -85,6 +85,7 @@ function App() {
       const saved = await request(`/api/products/${id}/stock`, { method: 'PATCH', body: JSON.stringify({ delta }) });
       setProducts(items => items.map(product => product.id === id ? { ...product, ...(saved?.data || { stock: current.stock + delta }) } : product));
       if (API) { const movementPayload = await request('/stock-movements'); setStockMovements(movementPayload?.data ?? []); }
+      if (API) { const movementPayload = await request('/stock-movements'); setStockMovements(movementPayload?.data ?? []); }
     } catch (error) {
       setNotice(error.message);
     }
