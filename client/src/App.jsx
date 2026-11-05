@@ -11,6 +11,7 @@ const API = import.meta.env.VITE_API_URL;
 function App() {
   const [products, setProducts] = useState(initialProducts);
   const [sales, setSales] = useState(demoSales);
+  const [stockMovements, setStockMovements] = useState([]);
   const [page, setPage] = useState('Overview');
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('All categories');
@@ -21,9 +22,16 @@ function App() {
   useEffect(() => {
     if (!API) return;
     let active = true;
-    fetch(`${API}/sales`).then(response => response.ok ? response.json() : Promise.reject(new Error('Could not load saved sales')))
-      .then(payload => { if (active && Array.isArray(payload.data) && payload.data.length) setSales(payload.data); })
-      .catch(() => { if (active) setNotice('Showing demo sales until the API is available'); });
+    Promise.all([
+      fetch(`${API}/products`).then(r => r.ok ? r.json() : Promise.reject(new Error('Products unavailable'))),
+      fetch(`${API}/sales`).then(r => r.ok ? r.json() : Promise.reject(new Error('Sales unavailable'))),
+      fetch(`${API}/stock-movements`).then(r => r.ok ? r.json() : Promise.reject(new Error('Movement history unavailable')))
+    ]).then(([p, s, m]) => {
+      if (!active) return;
+      setProducts(Array.isArray(p.data) ? p.data : []);
+      setSales(Array.isArray(s.data) ? s.data : []);
+      setStockMovements(Array.isArray(m.data) ? m.data : []);
+    }).catch(() => { if (active) setNotice('Could not sync with the API. Check the backend and database.'); });
     return () => { active = false; };
   }, []);
   const summary = summarizeInventory(products);
@@ -76,6 +84,8 @@ function App() {
     try {
       const saved = await request(`/api/products/${id}/stock`, { method: 'PATCH', body: JSON.stringify({ delta }) });
       setProducts(items => items.map(product => product.id === id ? { ...product, ...(saved?.data || { stock: current.stock + delta }) } : product));
+      if (API) { const movementPayload = await request('/stock-movements'); setStockMovements(movementPayload?.data ?? []); }
+      if (API) { const movementPayload = await request('/stock-movements'); setStockMovements(movementPayload?.data ?? []); }
     } catch (error) {
       setNotice(error.message);
     }
@@ -131,7 +141,7 @@ function App() {
           <section className="analytics-grid"><div className="panel movement-panel"><div className="panel-heading"><div><h2>Inventory movement</h2><p>Stock received vs. stock dispatched · sample week</p></div><span className="select-button">Last 7 days <ChevronDown size={14} /></span></div><div className="chart-legend"><span><i className="legend-in" /> Stock in</span><span><i className="legend-out" /> Stock out</span><strong>Weekly view <ArrowUpRight size={14} /></strong></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={weeklyMovement} margin={{ top: 10, right: 4, left: -25, bottom: 0 }}><defs><linearGradient id="inFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a18bfa" stopOpacity={0.25} /><stop offset="100%" stopColor="#a18bfa" stopOpacity={0} /></linearGradient><linearGradient id="outFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#7ce7c1" stopOpacity={0.2} /><stop offset="100%" stopColor="#7ce7c1" stopOpacity={0} /></linearGradient></defs><CartesianGrid stroke="#eeeef4" vertical={false} strokeDasharray="4 5" /><XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: '#9999a9', fontSize: 11 }} dy={10} /><Tooltip contentStyle={{ borderRadius: 12, border: '1px solid #eeeef4', fontSize: 12 }} /><Area type="monotone" dataKey="inbound" name="Stock in" stroke="#9a83f6" strokeWidth={2.5} fill="url(#inFill)" /><Area type="monotone" dataKey="outbound" name="Stock out" stroke="#59d6ad" strokeWidth={2.5} fill="url(#outFill)" /></AreaChart></ResponsiveContainer></div></div>
           <div className="panel alerts-panel"><div className="panel-heading"><div><h2>Needs attention <span className="tiny-count">{summary.lowStock + summary.outOfStock}</span></h2><p>Keep the next stockout off the schedule</p></div><button className="round-arrow" aria-label="View products" onClick={() => { setPage('Products'); setStatus('Low stock'); }}><ArrowUpRight size={17} /></button></div><div className="alert-list">{products.filter(p => getStockStatus(p) !== 'In stock').slice(0, 4).map(product => <div className="alert-row" key={product.id}><div className="product-glyph violet"><Package size={17} /></div><div className="alert-product"><strong>{product.name}</strong><small>{product.sku}</small></div><div className="alert-qty"><strong>{product.stock} left</strong><span className={product.stock === 0 ? 'status-out' : 'status-low'}>{getStockStatus(product)}</span></div></div>)}{summary.lowStock + summary.outOfStock === 0 && <div className="empty-state compact">No stock alerts right now. Nice work.</div>}</div><button className="text-link" onClick={() => { setPage('Products'); setStatus('Low stock'); }}>View stock alerts <ArrowUpRight size={14} /></button></div></section>
           <section className="panel products-panel"><div className="panel-heading product-panel-heading"><div><h2>Product overview</h2><p>A quick look at your catalog</p></div><button className="text-link" onClick={() => setPage('Products')}>View all products <ArrowUpRight size={14} /></button></div><ProductTable products={products.slice(0, 5)} onStock={adjustStock} /></section>
-        </> : page === 'Sales' ? <SalesDashboard sales={sales} setSales={setSales} api={API} setNotice={setNotice} /> : <section className="panel full-products"><div className="panel-heading"><div><h2>{page === 'Products' ? 'Product catalog' : page}</h2><p>{page === 'Products' ? 'Search your catalog, review stock, and make updates.' : 'This workspace area is planned for the next release.'}</p></div><span className="total-tag">{products.length} products</span></div>{page === 'Products' ? <><div className="table-toolbar"><div className="search-box"><Search size={16} /><input aria-label="Search products" placeholder="Search products, SKU..." value={query} onChange={event => setQuery(event.target.value)} />{query && <button onClick={() => setQuery('')} aria-label="Clear search"><X size={14} /></button>}</div><div className="filter-controls"><SlidersHorizontal size={15} /><select aria-label="Filter by category" value={category} onChange={event => setCategory(event.target.value)}><option>All categories</option>{[...new Set(products.map(product => product.category))].map(item => <option key={item}>{item}</option>)}</select><select aria-label="Filter by status" value={status} onChange={event => setStatus(event.target.value)}><option>All items</option><option>In stock</option><option>Low stock</option><option>Out of stock</option></select></div></div><ProductTable products={filtered} onStock={adjustStock} onDelete={deleteProduct} />{filtered.length === 0 && <div className="empty-state">No products match those filters. Try a different search.</div>}</> : <div className="coming-soon"><div className="coming-icon"><Sparkles size={24} /></div><h3>More visibility. Less busywork.</h3><p>Supplier workflows and stock movement history are planned for the next release.</p><button className="btn btn-primary" onClick={() => setPage('Overview')}>Back to overview</button></div>}</section>}
+        </> : page === 'Sales' ? <SalesDashboard sales={sales} setSales={setSales} api={API} setNotice={setNotice} onInventorySync={async () => { const [p, m] = await Promise.all([request('/products'), request('/stock-movements')]); setProducts(p.data); setStockMovements(m.data); }} /> : <section className="panel full-products"><div className="panel-heading"><div><h2>{page === 'Products' ? 'Product catalog' : page}</h2><p>{page === 'Products' ? 'Search your catalog, review stock, and make updates.' : 'This workspace area is planned for the next release.'}</p></div><span className="total-tag">{products.length} products</span></div>{page === 'Products' ? <><div className="table-toolbar"><div className="search-box"><Search size={16} /><input aria-label="Search products" placeholder="Search products, SKU..." value={query} onChange={event => setQuery(event.target.value)} />{query && <button onClick={() => setQuery('')} aria-label="Clear search"><X size={14} /></button>}</div><div className="filter-controls"><SlidersHorizontal size={15} /><select aria-label="Filter by category" value={category} onChange={event => setCategory(event.target.value)}><option>All categories</option>{[...new Set(products.map(product => product.category))].map(item => <option key={item}>{item}</option>)}</select><select aria-label="Filter by status" value={status} onChange={event => setStatus(event.target.value)}><option>All items</option><option>In stock</option><option>Low stock</option><option>Out of stock</option></select></div></div><ProductTable products={filtered} onStock={adjustStock} onDelete={deleteProduct} />{filtered.length === 0 && <div className="empty-state">No products match those filters. Try a different search.</div>}</> : <div className="coming-soon"><div className="coming-icon"><Sparkles size={24} /></div><h3>More visibility. Less busywork.</h3><p>Supplier workflows and stock movement history are planned for the next release.</p><button className="btn btn-primary" onClick={() => setPage('Overview')}>Back to overview</button></div>}</section>}
         <footer className="footer"><span>© 2026 StockPilot</span><span><i /> Inventory intelligence, in your corner.</span><span>Built for momentum <span className="footer-heart">✳</span></span></footer>
       </div>
     </main>
@@ -142,6 +152,14 @@ function App() {
 
 
 
+function StockMovementTable({ movements }) {
+  return <section className="panel full-products">
+    <div className="panel-heading"><div><h2>Stock movement ledger</h2><p>Traceable receipts, sales and manual adjustments.</p></div><span className="total-tag">{movements.length} entries</span></div>
+    {movements.length ? <div className="table-scroll"><table><thead><tr><th>DATE</th><th>PRODUCT</th><th>TYPE</th><th>CHANGE</th><th>BEFORE</th><th>AFTER</th><th>REFERENCE</th></tr></thead><tbody>
+      {movements.map(item => <tr key={item.id}><td>{new Date(item.createdAt).toLocaleString()}</td><td><strong>{item.product?.name ?? 'Deleted product'}</strong><small>{item.product?.sku ?? ''}</small></td><td><span className="source-pill">{item.type}</span></td><td className="price-cell">{item.quantity > 0 ? '+' : ''}{item.quantity}</td><td>{item.stockBefore}</td><td>{item.stockAfter}</td><td>{item.reference ?? item.note ?? '—'}</td></tr>)}
+    </tbody></table></div> : <div className="empty-state">No stock movements recorded yet. Add stock or import a matched sale to create the first entry.</div>}
+  </section>;
+}
 function exportSalesCsv(sales, setNotice) {
   const escapeCell = value => `"${String(value ?? '').replaceAll('"', '""')}"`;
   const rows = [['Date', 'Product', 'Category', 'Units sold', 'Revenue', 'Source'], ...sales.map(s => [s.date, s.product ?? s.productName, s.category, s.unitsSold, s.revenue ?? '', s.source])];
@@ -155,11 +173,12 @@ function exportSalesCsv(sales, setNotice) {
   setNotice('Sales report exported');
 }
 
-function SalesDashboard({ sales, setSales, api, setNotice }) {
+function SalesDashboard({ sales, setSales, api, setNotice, onInventorySync }) {
   const [fileName, setFileName] = useState('');
   const [pendingSales, setPendingSales] = useState([]);
   const [importErrors, setImportErrors] = useState([]);
   const [isImporting, setIsImporting] = useState(false);
+  const [idempotencyKey, setIdempotencyKey] = useState('');
   const monthly = useMemo(() => aggregateSalesByMonth(sales).map(item => ({
     ...item,
     label: new Date(`${item.month}-01T00:00:00`).toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
@@ -172,7 +191,7 @@ function SalesDashboard({ sales, setSales, api, setNotice }) {
   const units = sales.reduce((sum, item) => sum + (Number(item.unitsSold) || 0), 0);
   const revenueCount = sales.filter(item => item.revenue !== null && item.revenue !== undefined && item.revenue !== '').length;
 
-  function chooseFile(file) {
+  async function chooseFile(file) {
     if (!file) return;
     if (!file.name.toLowerCase().endsWith('.csv')) {
       setNotice('Please choose a CSV file');
@@ -183,6 +202,9 @@ function SalesDashboard({ sales, setSales, api, setNotice }) {
       return;
     }
     setFileName(file.name);
+    const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+    const key = Array.from(new Uint8Array(digest)).map(value => value.toString(16).padStart(2, '0')).join('');
+    setIdempotencyKey(key);
     Papa.parse(file, {
       header: true,
       skipEmptyLines: true,
@@ -206,7 +228,7 @@ function SalesDashboard({ sales, setSales, api, setNotice }) {
         const response = await fetch(`${api}/sales/import`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ records: pendingSales })
+          body: JSON.stringify({ records: pendingSales, idempotencyKey, fileName })
         });
         const payload = await response.json().catch(() => ({}));
         if (!response.ok) throw new Error(payload.error || 'Sales import failed');
@@ -214,11 +236,12 @@ function SalesDashboard({ sales, setSales, api, setNotice }) {
       } else {
         imported = pendingSales.map((record, index) => ({ ...record, id: `upload-${Date.now()}-${index}` }));
       }
-      setSales(current => [...current, ...imported]);
+      if (api) { const refreshed = await fetch(api + '/sales').then(response => response.json()); setSales(refreshed.data ?? [...sales, ...imported]); await onInventorySync(); } else setSales(current => [...current, ...imported]);
       setNotice(`Imported ${imported.length.toLocaleString()} sales rows${importErrors.length ? `; skipped ${importErrors.length} invalid rows` : ''}${api ? '' : ' (demo session only — connect the API to save permanently)'}`);
       setPendingSales([]);
       setImportErrors([]);
       setFileName('');
+      setIdempotencyKey('');
     } catch (error) {
       setNotice(error.message);
     } finally {

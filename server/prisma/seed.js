@@ -15,7 +15,18 @@ const seedProducts = [
 
 try {
   for (const product of seedProducts) {
-    await prisma.product.upsert({ where: { sku: product.sku }, update: product, create: product });
+    const saved = await prisma.product.upsert({
+      where: { sku: product.sku },
+      update: { name: product.name, category: product.category, price: product.price, reorderAt: product.reorderAt },
+      create: product
+    });
+    const openingMovement = await prisma.stockMovement.findFirst({ where: { productId: saved.id, type: 'OPENING' } });
+    if (!openingMovement && saved.stock > 0) {
+      await prisma.stockMovement.create({ data: {
+        productId: saved.id, type: 'OPENING', quantity: saved.stock,
+        stockBefore: 0, stockAfter: saved.stock, note: 'Seeded opening stock'
+      } });
+    }
   }
   const demoSales = [
     ['2026-05-04', 'Studio Headphones', 'Audio', 24, '3599.76'],
