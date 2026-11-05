@@ -15,7 +15,11 @@ const seedProducts = [
 
 try {
   for (const product of seedProducts) {
-    const saved = await prisma.product.upsert({ where: { sku: product.sku }, update: product, create: product });
+    const saved = await prisma.product.upsert({
+      where: { sku: product.sku },
+      update: { name: product.name, category: product.category, price: product.price, reorderAt: product.reorderAt },
+      create: product
+    });
     const openingMovement = await prisma.stockMovement.findFirst({ where: { productId: saved.id, type: 'OPENING' } });
     if (!openingMovement && saved.stock > 0) {
       await prisma.stockMovement.create({ data: {
