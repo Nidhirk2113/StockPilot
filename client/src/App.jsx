@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, ArrowDownRight, ArrowUpRight, Bell, Boxes, ChartNoAxesCombined, ChevronDown, CircleHelp, Command, Download, Ellipsis, LayoutDashboard, Menu, Package, Plus, Search, Settings2, SlidersHorizontal, Sparkles, Truck, X, Zap } from 'lucide-react';
+import { Activity, ArrowDownRight, ArrowUpRight, Bell, Boxes, ChartNoAxesCombined, ChevronDown, CircleHelp, Command, Download, Ellipsis, Gamepad2, LayoutDashboard, Menu, Package, Plus, Search, Settings2, SlidersHorizontal, Sparkles, Trash2, Truck, X, Zap } from 'lucide-react';
+import HistoricalGameSales from './HistoricalGameSales.jsx';
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import Papa from 'papaparse';
 import { aggregateSalesByMonth, demoSales, normalizeSalesRows, topSellingProducts } from './sales.js';
