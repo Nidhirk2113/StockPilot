@@ -39,7 +39,7 @@ export function normalizeSalesRows(rows, source = 'CSV upload') {
     let unitsRaw = first(row, ['units_sold', 'units', 'quantity', 'sales_units']);
     let revenueRaw = first(row, ['revenue', 'sales_revenue', 'sales_value', 'amount']);
     // Support the uploaded vgsales.csv schema. Global_Sales is in millions of copies, not currency.
-    if (globalSales !== undefined && unitsRaw === undefined) unitsRaw = Number(globalSales) * 1_000_000;
+    if (globalSales !== undefined && unitsRaw === undefined) unitsRaw = Math.round(Number(globalSales) * 1_000_000);
     const unitsSold = Number(unitsRaw);
     const revenue = revenueRaw === undefined ? null : Number(String(revenueRaw).replace(/[$,]/g, ''));
     const date = dateValue ? new Date(dateValue) : null;
