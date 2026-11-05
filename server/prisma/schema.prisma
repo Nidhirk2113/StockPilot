@@ -8,31 +8,63 @@ datasource db {
 }
 
 model Product {
-  id        String   @id @default(cuid())
-  name      String
-  sku       String   @unique
-  category  String
-  price     Decimal  @db.Decimal(10, 2)
-  stock     Int      @default(0)
-  reorderAt Int      @default(5)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id             String           @id @default(cuid())
+  name           String
+  sku            String           @unique
+  category       String
+  price          Decimal          @db.Decimal(10, 2)
+  stock          Int              @default(0)
+  reorderAt      Int              @default(5)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  salesRecords   SalesRecord[]
+  stockMovements StockMovement[]
 
   @@index([category])
   @@index([stock, reorderAt])
 }
 
+model SalesImport {
+  id             String        @id @default(cuid())
+  idempotencyKey String        @unique
+  fileName       String
+  recordCount    Int
+  createdAt      DateTime      @default(now())
+  records        SalesRecord[]
+}
+
 model SalesRecord {
-  id         String   @id @default(cuid())
+  id         String       @id @default(cuid())
   saleDate   DateTime
+  productId  String?
+  product    Product?     @relation(fields: [productId], references: [id], onDelete: SetNull)
   productName String
-  category   String   @default("Uncategorized")
+  category   String       @default("Uncategorized")
   unitsSold  Int
-  revenue    Decimal? @db.Decimal(14, 2)
-  source     String   @default("CSV upload")
-  createdAt  DateTime @default(now())
+  revenue    Decimal?     @db.Decimal(14, 2)
+  source     String       @default("CSV upload")
+  importId   String?
+  import     SalesImport? @relation(fields: [importId], references: [id], onDelete: SetNull)
+  createdAt  DateTime     @default(now())
 
   @@index([saleDate])
+  @@index([productId, saleDate])
   @@index([productName])
   @@index([category, saleDate])
+}
+
+model StockMovement {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Restrict)
+  type        String
+  quantity    Int
+  stockBefore Int
+  stockAfter  Int
+  reference   String?
+  note        String?
+  createdAt   DateTime @default(now())
+
+  @@index([productId, createdAt])
+  @@index([type, createdAt])
 }
