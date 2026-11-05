@@ -7,7 +7,10 @@
 ## Features
 - Responsive inventory dashboard with inventory KPIs, weekly stock movement, and low-stock alerts
 - Sales intelligence page with monthly revenue, units sold, top products, and recent imported records
-- CSV sales imports with row validation, error reporting, sample template download, and append-only history
+- CSV sales imports with row validation, idempotency protection, product matching, and append-only history
+- Matched sales deduct inventory in a database transaction; insufficient stock rejects and rolls back the complete import
+- Unmatched sales remain in analytics without changing inventory
+- Append-only stock movement ledger for opening stock, sales, receipts, and manual adjustments
 - Supports standard sales CSVs and the uploaded video-game sales schema (`Name`, `Genre`, `Year`, `Global_Sales`); `Global_Sales` is interpreted as millions of units, never currency
 - Product catalog with search, category filtering, stock status, and add-product flow
 - Low-stock and out-of-stock views
@@ -75,8 +78,18 @@ Open the URL printed by Vite (normally `http://localhost:5173`). The UI uses dem
 - `POST /api/products` — create a product (validated server-side)
 - `PATCH /api/products/:id/stock` — adjust stock by a signed integer `delta`
 - `DELETE /api/products/:id` — delete a product
-- `GET /api/sales` — retrieve persisted sales history
-- `POST /api/sales/import` — validate and append sales rows (up to 20,000 per request)
+- `GET /api/sales` — retrieve persisted sales history, including linked product IDs
+- `POST /api/sales/import` — validate and append sales rows (up to 20,000 per request); requires an SHA-256 `idempotencyKey` and `fileName`
+- `GET /api/stock-movements` — retrieve the latest stock ledger entries (up to 500)
+
+### Inventory synchronization behavior
+- Product names and SKUs are matched case-insensitively during CSV imports.
+- A matched sales row is linked to its product and reduces available stock.
+- If any matched row would make stock negative, the entire import transaction is rolled back.
+- Re-uploading the same file is rejected using its SHA-256 idempotency key, preventing duplicate sales and repeat stock deductions.
+- Unmatched product names are retained as unlinked sales records for analytics; they do not affect stock.
+- Manual stock adjustments and opening stock are recorded in the movement ledger.
+- Products with movement history cannot be deleted, preserving audit integrity.
 
 ## Sales CSV format
 
@@ -94,6 +107,7 @@ The app also recognizes the `vgsales.csv`-style headers `Name`, `Genre`, `Year`,
 
 ## Deployment checklist
 1. Provision a managed PostgreSQL database and set `DATABASE_URL`.
+2. Apply the latest migration with `npm run db:deploy` from the server directory (or `npx prisma migrate dev` locally).
 2. Set a strong, unique `PORT`/platform configuration and `CLIENT_ORIGIN` for CORS.
 3. Run `npx prisma migrate deploy` during release.
 4. Deploy `server` as a Node service and `client` as a static Vite site; set `VITE_API_URL` to the public API URL.
