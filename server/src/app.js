@@ -164,7 +164,8 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
       const product = await prisma.$transaction(async tx => {
         const current = await tx.product.findUnique({ where: { id: req.params.id } });
         if (!current) return null;
-        const nextStock = current.stock + parsed.data.delta;
+        const stockBefore = current.stock;
+        const nextStock = stockBefore + parsed.data.delta;
         if (nextStock < 0) {
           const error = new Error('Stock cannot be negative');
           error.status = 400;
@@ -173,7 +174,7 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
         const updated = await tx.product.update({ where: { id: current.id }, data: { stock: nextStock } });
         await tx.stockMovement.create({ data: {
           productId: current.id, type: parsed.data.delta > 0 ? 'RECEIPT' : 'ADJUSTMENT',
-          quantity: parsed.data.delta, stockBefore: current.stock, stockAfter: nextStock,
+          quantity: parsed.data.delta, stockBefore, stockAfter: nextStock,
           note: 'Manual stock adjustment'
         } });
         return updated;
