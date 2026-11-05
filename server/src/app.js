@@ -105,7 +105,7 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
           }
           const saved = await tx.salesRecord.create({ data: {
             saleDate: new Date(`${row.date}T00:00:00.000Z`),
-            productId, productName: row.product, category: row.category,
+            productId, productName: product?.name ?? row.product, category: row.category,
             unitsSold: row.unitsSold, revenue: row.revenue ?? null,
             source: row.source, importId: batch.id
           } });
