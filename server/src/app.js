@@ -141,11 +141,14 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
     const parsed = productSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
     try {
-      const product = await prisma.product.create({ data: parsed.data });
-      if (product.stock > 0) await prisma.stockMovement.create({ data: {
-        productId: product.id, type: 'OPENING', quantity: product.stock,
-        stockBefore: 0, stockAfter: product.stock, note: 'Opening stock'
-      } });
+      const product = await prisma.$transaction(async tx => {
+        const created = await tx.product.create({ data: parsed.data });
+        if (created.stock > 0) await tx.stockMovement.create({ data: {
+          productId: created.id, type: 'OPENING', quantity: created.stock,
+          stockBefore: 0, stockAfter: created.stock, note: 'Opening stock'
+        } });
+        return created;
+      });
       return res.status(201).json({ data: productPayload(product) });
     } catch (error) {
       if (error.code === 'P2002') return res.status(409).json({ error: 'SKU already exists' });
