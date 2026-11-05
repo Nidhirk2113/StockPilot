@@ -11,6 +11,7 @@ const API = import.meta.env.VITE_API_URL;
 function App() {
   const [products, setProducts] = useState(initialProducts);
   const [sales, setSales] = useState(demoSales);
+  const [stockMovements, setStockMovements] = useState([]);
   const [page, setPage] = useState('Overview');
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('All categories');
@@ -21,9 +22,16 @@ function App() {
   useEffect(() => {
     if (!API) return;
     let active = true;
-    fetch(`${API}/sales`).then(response => response.ok ? response.json() : Promise.reject(new Error('Could not load saved sales')))
-      .then(payload => { if (active && Array.isArray(payload.data) && payload.data.length) setSales(payload.data); })
-      .catch(() => { if (active) setNotice('Showing demo sales until the API is available'); });
+    Promise.all([
+      fetch(`${API}/products`).then(r => r.ok ? r.json() : Promise.reject(new Error('Products unavailable'))),
+      fetch(`${API}/sales`).then(r => r.ok ? r.json() : Promise.reject(new Error('Sales unavailable'))),
+      fetch(`${API}/stock-movements`).then(r => r.ok ? r.json() : Promise.reject(new Error('Movement history unavailable')))
+    ]).then(([p, s, m]) => {
+      if (!active) return;
+      setProducts(Array.isArray(p.data) ? p.data : []);
+      setSales(Array.isArray(s.data) ? s.data : []);
+      setStockMovements(Array.isArray(m.data) ? m.data : []);
+    }).catch(() => { if (active) setNotice('Could not sync with the API. Check the backend and database.'); });
     return () => { active = false; };
   }, []);
   const summary = summarizeInventory(products);
