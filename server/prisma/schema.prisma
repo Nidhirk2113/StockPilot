@@ -68,3 +68,37 @@ model StockMovement {
   @@index([productId, createdAt])
   @@index([type, createdAt])
 }
+
+
+model HistoricalGameDatasetImport {
+  id             String             @id @default(cuid())
+  idempotencyKey String             @unique
+  fileName       String
+  recordCount    Int
+  createdAt      DateTime           @default(now())
+  records        HistoricalGameSale[]
+}
+
+model HistoricalGameSale {
+  id             String                    @id @default(cuid())
+  datasetImportId String
+  datasetImport  HistoricalGameDatasetImport @relation(fields: [datasetImportId], references: [id], onDelete: Cascade)
+  rank           Int
+  name           String
+  platform       String
+  year           Int?
+  genre          String
+  publisher      String?
+  naSales        Decimal                   @db.Decimal(10, 2)
+  euSales        Decimal                   @db.Decimal(10, 2)
+  jpSales        Decimal                   @db.Decimal(10, 2)
+  otherSales     Decimal                   @db.Decimal(10, 2)
+  globalSales    Decimal                   @db.Decimal(10, 2)
+
+  @@unique([datasetImportId, rank])
+  @@index([year])
+  @@index([genre])
+  @@index([platform])
+  @@index([publisher])
+  @@index([year, genre])
+}

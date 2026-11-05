@@ -8,6 +8,8 @@ function fixture() {
   const sales = [];
   const imports = new Set();
   const movements = [];
+  const historicalImports = [];
+  const historicalSales = [];
   const prisma = {
     $transaction: async callback => callback(prisma),
     salesImport: {
@@ -20,6 +22,20 @@ function fixture() {
     salesRecord: {
       findMany: async () => sales,
       create: async ({ data }) => { const saved = { id: `sale-${sales.length + 1}`, ...data }; sales.push(saved); return saved; }
+    },
+    historicalGameDatasetImport: {
+      create: async ({ data }) => {
+        if (historicalImports.some(item => item.idempotencyKey === data.idempotencyKey)) throw Object.assign(new Error('duplicate'), { code: 'P2002' });
+        const saved = { id: `game-import-${historicalImports.length + 1}`, createdAt: new Date(), ...data };
+        historicalImports.push(saved);
+        return saved;
+      },
+      findFirst: async () => historicalImports.at(-1) ?? null
+    },
+    historicalGameSale: {
+      count: async () => historicalSales.length,
+      createMany: async ({ data }) => { historicalSales.push(...data.map((row, index) => ({ id: `game-sale-${historicalSales.length + index + 1}`, ...row }))); return { count: data.length }; },
+      findMany: async () => historicalSales
     },
     stockMovement: {
       create: async ({ data }) => { const saved = { id: `move-${movements.length + 1}`, createdAt: new Date(), ...data }; movements.push(saved); return saved; },
@@ -46,7 +62,7 @@ function fixture() {
       delete: async ({ where }) => { const index = items.findIndex(item => item.id === where.id); if (index < 0) throw Object.assign(new Error('not found'), { code: 'P2025' }); if (movements.some(move => move.productId === where.id)) throw Object.assign(new Error('restricted'), { code: 'P2003' }); items.splice(index, 1); }
     }
   };
-  return { app: createApp({ prisma }), items, sales, movements };
+  return { app: createApp({ prisma }), items, sales, movements, historicalImports, historicalSales };
 }
 const payload = (records, key = 'phase-one-import-key-0001') => ({ idempotencyKey: key, fileName: 'sales.csv', records });
 
@@ -97,3 +113,70 @@ test('deletes products without movements and blocks deletion with movement histo
   second.movements.push({ productId: 'prod-1' });
   await request(second.app).delete('/api/products/prod-1').expect(409);
 });
+
+
+const historicalPayload = (records, key = 'historical-game-import-key-0001') => ({
+  idempotencyKey: key,
+  fileName: 'vgsales.csv',
+  records
+});
+
+const gameRow = {
+  rank: 1,
+  name: 'Wii Sports',
+  platform: 'Wii',
+  year: 2006,
+  genre: 'Sports',
+  publisher: 'Nintendo',
+  naSales: 41.49,
+  euSales: 29.02,
+  jpSales: 3.77,
+  otherSales: 8.46,
+  globalSales: 82.74
+};
+
+test('imports historical game sales into an isolated dataset without touching inventory', async () => {
+  const { app, items, historicalSales } = fixture();
+  const response = await request(app)
+    .post('/api/historical-game-sales/import')
+    .send(historicalPayload([gameRow]))
+    .expect(201);
+
+  assert.equal(response.body.imported, 1);
+  assert.equal(historicalSales[0].globalSales, 82.74);
+  assert.equal(historicalSales[0].datasetImportId, 'game-import-1');
+  assert.equal(items[0].stock, 10);
+});
+
+test('preserves nullable historical year and publisher fields', async () => {
+  const { app, historicalSales } = fixture();
+  await request(app)
+    .post('/api/historical-game-sales/import')
+    .send(historicalPayload([{ ...gameRow, rank: 2, year: null, publisher: null }]))
+    .expect(201);
+
+  assert.equal(historicalSales[0].year, null);
+  assert.equal(historicalSales[0].publisher, null);
+});
+
+test('rejects duplicate historical dataset imports', async () => {
+  const { app } = fixture();
+  const body = historicalPayload([gameRow]);
+  await request(app).post('/api/historical-game-sales/import').send(body).expect(201);
+  await request(app).post('/api/historical-game-sales/import').send(body).expect(409);
+});
+
+test('returns historical game sales aggregates in original million-copy units', async () => {
+  const { app } = fixture();
+  await request(app)
+    .post('/api/historical-game-sales/import')
+    .send(historicalPayload([gameRow]))
+    .expect(201);
+
+  const response = await request(app).get('/api/historical-game-sales/analytics').expect(200);
+  assert.equal(response.body.recordCount, 1);
+  assert.equal(response.body.totals.globalSales, 82.74);
+  assert.equal(response.body.byGenre[0].label, 'Sports');
+  assert.equal(response.body.byPlatform[0].label, 'Wii');
+});
+
