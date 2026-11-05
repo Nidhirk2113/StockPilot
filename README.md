@@ -11,7 +11,7 @@
 - Matched sales deduct inventory in a database transaction; insufficient stock rejects and rolls back the complete import
 - Unmatched sales remain in analytics without changing inventory
 - Append-only stock movement ledger for opening stock, sales, receipts, and manual adjustments
-- Supports standard sales CSVs and the uploaded video-game sales schema (`Name`, `Genre`, `Year`, `Global_Sales`); `Global_Sales` is interpreted as millions of units, never currency
+- Separate historical video-game sales analytics dataset, preserving all 11 original source columns and million-copy sales units without affecting inventory
 - Product catalog with search, category filtering, stock status, and add-product flow
 - Low-stock and out-of-stock views
 - CSV export for the current product list
@@ -81,6 +81,9 @@ Open the URL printed by Vite (normally `http://localhost:5173`). The UI uses dem
 - `GET /api/sales` — retrieve persisted sales history, including linked product IDs
 - `POST /api/sales/import` — validate and append sales rows (up to 20,000 per request); requires an SHA-256 `idempotencyKey` and `fileName`
 - `GET /api/stock-movements` — retrieve the latest stock ledger entries (up to 500)
+- `GET /api/historical-game-sales/status` — historical dataset record count and latest import metadata
+- `GET /api/historical-game-sales/analytics` — aggregate yearly, genre, platform, publisher, and regional game sales
+- `POST /api/historical-game-sales/import` — idempotently import up to 20,000 historical game sales rows into an isolated dataset
 
 ### Inventory synchronization behavior
 - Product names and SKUs are matched case-insensitively during CSV imports.
@@ -103,7 +106,7 @@ date,product,category,units_sold,revenue
 
 `date`, `product`, and `units_sold` are required (a `year` column can stand in for `date`); `category` and `revenue` are optional. CSV uploads append to existing records rather than replacing them. Rows that fail validation are reported before import. When the revenue column is absent, units still count toward volume and rankings, but are excluded from revenue totals.
 
-The app also recognizes the `vgsales.csv`-style headers `Name`, `Genre`, `Year`, and `Global_Sales`. In that dataset, `Global_Sales` is measured in millions of game copies, so it is converted to units sold; it is not treated as money. Rows without a usable year are flagged and skipped.
+The video-game dataset is intentionally separate from operational sales and inventory. Upload it from the **Historical game sales** workspace page. The importer preserves the original fields: `Rank`, `Name`, `Platform`, `Year`, `Genre`, `Publisher`, `NA_Sales`, `EU_Sales`, `JP_Sales`, `Other_Sales`, and `Global_Sales`. Sales values remain in their source unit of millions of copies; they are never converted into individual stock units or currency. Missing `Year` and `Publisher` values are stored as null. Dataset imports are protected by a SHA-256 idempotency key and stored separately from `SalesRecord` and `StockMovement`. The historical analytics page reports global sales by year, genre, platform, publisher, and region.
 
 ## Deployment checklist
 1. Provision a managed PostgreSQL database and set `DATABASE_URL`.
