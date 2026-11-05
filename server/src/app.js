@@ -21,6 +21,18 @@ const salesRecordSchema = z.object({
   source: z.string().trim().min(1).max(120).default('CSV upload')
 });
 
+const productPayload = product => ({ ...product, price: Number(product.price) });
+const salesPayload = record => ({
+  id: record.id,
+  date: record.saleDate.toISOString().slice(0, 10),
+  productId: record.productId,
+  product: record.productName,
+  category: record.category,
+  unitsSold: record.unitsSold,
+  revenue: record.revenue === null ? null : Number(record.revenue),
+  source: record.source
+});
+
 export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
   const app = express();
   app.use(helmet());
@@ -33,66 +45,96 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
     try {
       const { q, category, status } = req.query;
       const where = {};
-      if (typeof q === 'string' && q.trim()) {
-        where.OR = [
-          { name: { contains: q.trim(), mode: 'insensitive' } },
-          { sku: { contains: q.trim(), mode: 'insensitive' } }
-        ];
-      }
+      if (typeof q === 'string' && q.trim()) where.OR = [
+        { name: { contains: q.trim(), mode: 'insensitive' } },
+        { sku: { contains: q.trim(), mode: 'insensitive' } }
+      ];
       if (typeof category === 'string' && category !== 'All categories') where.category = category;
       if (status === 'Out of stock') where.stock = 0;
+      if (status === 'In stock') where.stock = { gt: 0 };
       let products = await prisma.product.findMany({ where, orderBy: { updatedAt: 'desc' } });
       if (status === 'Low stock') products = products.filter(product => product.stock > 0 && product.stock <= product.reorderAt);
-      return res.json({ data: products });
-    } catch (error) {
-      return next(error);
-    }
+      return res.json({ data: products.map(productPayload) });
+    } catch (error) { return next(error); }
   });
 
   app.get('/api/sales', async (_req, res, next) => {
     try {
       const records = await prisma.salesRecord.findMany({ orderBy: { saleDate: 'asc' }, take: 20000 });
-      return res.json({ data: records.map(record => ({
-        id: record.id,
-        date: record.saleDate.toISOString().slice(0, 10),
-        product: record.productName,
-        category: record.category,
-        unitsSold: record.unitsSold,
-        revenue: record.revenue === null ? null : Number(record.revenue),
-        source: record.source
-      })) });
+      return res.json({ data: records.map(salesPayload) });
+    } catch (error) { return next(error); }
+  });
+
+  app.post('/api/sales/import', async (req, res, next) => {
+    const parsed = z.object({
+      idempotencyKey: z.string().min(16).max(128),
+      fileName: z.string().trim().min(1).max(255).default('sales-upload.csv'),
+      records: z.array(salesRecordSchema).min(1).max(20000)
+    }).safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'Sales import validation failed', details: parsed.error.flatten() });
+    try {
+      const result = await prisma.$transaction(async tx => {
+        const batch = await tx.salesImport.create({
+          data: { idempotencyKey: parsed.data.idempotencyKey, fileName: parsed.data.fileName, recordCount: parsed.data.records.length }
+        });
+        const imported = [];
+        for (const row of parsed.data.records) {
+          const product = await tx.product.findFirst({
+            where: { OR: [
+              { name: { equals: row.product, mode: 'insensitive' } },
+              { sku: { equals: row.product, mode: 'insensitive' } }
+            ] }
+          });
+          let productId = null;
+          if (product) {
+            const updated = await tx.product.updateMany({
+              where: { id: product.id, stock: { gte: row.unitsSold } },
+              data: { stock: { decrement: row.unitsSold } }
+            });
+            if (updated.count !== 1) {
+              const error = new Error(`Insufficient stock for ${product.name}; import was rolled back.`);
+              error.status = 409;
+              throw error;
+            }
+            productId = product.id;
+            await tx.stockMovement.create({ data: {
+              productId, type: 'SALE', quantity: -row.unitsSold,
+              stockBefore: product.stock, stockAfter: product.stock - row.unitsSold,
+              reference: batch.id, note: `Sales import: ${row.product}`
+            } });
+          }
+          const saved = await tx.salesRecord.create({ data: {
+            saleDate: new Date(`${row.date}T00:00:00.000Z`),
+            productId, productName: row.product, category: row.category,
+            unitsSold: row.unitsSold, revenue: row.revenue ?? null,
+            source: row.source, importId: batch.id
+          } });
+          imported.push(saved);
+        }
+        return { batch, records: imported };
+      });
+      return res.status(201).json({
+        imported: result.records.length,
+        matchedProducts: result.records.filter(record => record.productId).length,
+        unmatchedProducts: result.records.filter(record => !record.productId).map(record => record.productName),
+        data: result.records.map(salesPayload)
+      });
     } catch (error) {
+      if (error.code === 'P2002') return res.status(409).json({ error: 'This CSV file has already been imported.' });
+      if (error.status === 409) return res.status(409).json({ error: error.message });
       return next(error);
     }
   });
 
-  app.post('/api/sales/import', async (req, res, next) => {
-    const parsed = z.object({ records: z.array(salesRecordSchema).min(1).max(20000) }).safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: 'Sales import validation failed', details: parsed.error.flatten() });
+  app.get('/api/stock-movements', async (req, res, next) => {
     try {
-      const records = await prisma.salesRecord.createManyAndReturn({
-        data: parsed.data.records.map(record => ({
-          saleDate: new Date(`${record.date}T00:00:00.000Z`),
-          productName: record.product,
-          category: record.category,
-          unitsSold: record.unitsSold,
-          revenue: record.revenue ?? null,
-          source: record.source
-        })),
-        select: { id: true, saleDate: true, productName: true, category: true, unitsSold: true, revenue: true, source: true }
+      const take = Math.min(Math.max(Number(req.query.limit) || 100, 1), 500);
+      const movements = await prisma.stockMovement.findMany({
+        include: { product: { select: { id: true, name: true, sku: true } } },
+        orderBy: { createdAt: 'desc' }, take
       });
-      return res.status(201).json({ imported: records.length, data: records.map(record => ({
-        id: record.id,
-        date: record.saleDate.toISOString().slice(0, 10),
-        product: record.productName,
-        category: record.category,
-        unitsSold: record.unitsSold,
-        revenue: record.revenue === null ? null : Number(record.revenue),
-        source: record.source
-      })) });
-    } catch (error) {
-      return next(error);
-    }
+      return res.json({ data: movements });
+    } catch (error) { return next(error); }
   });
 
   app.post('/api/products', async (req, res, next) => {
@@ -100,7 +142,11 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
     if (!parsed.success) return res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten().fieldErrors });
     try {
       const product = await prisma.product.create({ data: parsed.data });
-      return res.status(201).json({ data: product });
+      if (product.stock > 0) await prisma.stockMovement.create({ data: {
+        productId: product.id, type: 'OPENING', quantity: product.stock,
+        stockBefore: 0, stockAfter: product.stock, note: 'Opening stock'
+      } });
+      return res.status(201).json({ data: productPayload(product) });
     } catch (error) {
       if (error.code === 'P2002') return res.status(409).json({ error: 'SKU already exists' });
       return next(error);
@@ -110,15 +156,29 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
   app.patch('/api/products/:id/stock', async (req, res, next) => {
     if (!idSchema.safeParse(req.params.id).success) return res.status(400).json({ error: 'Invalid product id' });
     const parsed = z.object({ delta: z.number().int().min(-100000000).max(100000000) }).safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: 'delta must be a whole number' });
+    if (!parsed.success || parsed.data.delta === 0) return res.status(400).json({ error: 'delta must be a non-zero whole number' });
     try {
-      const current = await prisma.product.findUnique({ where: { id: req.params.id } });
-      if (!current) return res.status(404).json({ error: 'Product not found' });
-      const stock = current.stock + parsed.data.delta;
-      if (stock < 0) return res.status(400).json({ error: 'Stock cannot be negative' });
-      const product = await prisma.product.update({ where: { id: current.id }, data: { stock } });
-      return res.json({ data: product });
+      const product = await prisma.$transaction(async tx => {
+        const current = await tx.product.findUnique({ where: { id: req.params.id } });
+        if (!current) return null;
+        const nextStock = current.stock + parsed.data.delta;
+        if (nextStock < 0) {
+          const error = new Error('Stock cannot be negative');
+          error.status = 400;
+          throw error;
+        }
+        const updated = await tx.product.update({ where: { id: current.id }, data: { stock: nextStock } });
+        await tx.stockMovement.create({ data: {
+          productId: current.id, type: parsed.data.delta > 0 ? 'RECEIPT' : 'ADJUSTMENT',
+          quantity: parsed.data.delta, stockBefore: current.stock, stockAfter: nextStock,
+          note: 'Manual stock adjustment'
+        } });
+        return updated;
+      });
+      if (!product) return res.status(404).json({ error: 'Product not found' });
+      return res.json({ data: productPayload(product) });
     } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
       return next(error);
     }
   });
@@ -130,13 +190,14 @@ export function createApp({ prisma, clientOrigin = 'http://localhost:5173' }) {
       return res.status(204).end();
     } catch (error) {
       if (error.code === 'P2025') return res.status(404).json({ error: 'Product not found' });
+      if (error.code === 'P2003') return res.status(409).json({ error: 'Product has stock movement history and cannot be deleted. Keep it for audit history.' });
       return next(error);
     }
   });
 
   app.use((error, _req, res, _next) => {
     console.error(error);
-    if (error.code === 'P2002') return res.status(409).json({ error: 'A product with this SKU already exists' });
+    if (error.code === 'P2002') return res.status(409).json({ error: 'A record with this unique value already exists' });
     return res.status(500).json({ error: 'Internal server error' });
   });
   return app;
