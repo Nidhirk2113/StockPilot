@@ -184,6 +184,8 @@ export default function HistoricalGameSales({ api, setNotice }) {
       return;
     }
 
+    setPendingRecords([]);
+    setImportErrors([]);
     setFileName(file.name);
 
     Papa.parse(file, {
