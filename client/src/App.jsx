@@ -1,13 +1,132 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, ArrowDownRight, ArrowUpRight, Bell, Boxes, ChartNoAxesCombined, ChevronDown, CircleHelp, Command, Download, Ellipsis, Gamepad2, LayoutDashboard, Menu, Package, Plus, Search, Settings2, SlidersHorizontal, Sparkles, Truck, X, Zap } from 'lucide-react';
-import HistoricalGameSales from './HistoricalGameSales.jsx';
+import { Activity, ArrowDownRight, ArrowUpRight, Bell, Boxes, ChartNoAxesCombined, ChevronDown, CircleHelp, Command, Download, Ellipsis, LayoutDashboard, Menu, Package, Plus, Search, Settings2, SlidersHorizontal, Sparkles, Truck, X, Zap } from 'lucide-react';
 import { Area, AreaChart, Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import Papa from 'papaparse';
 import { aggregateSalesByMonth, demoSales, normalizeSalesRows, topSellingProducts } from './sales.js';
-import { initialProducts, weeklyMovement, filterProducts, getStockStatus, summarizeInventory, toCsv } from './data.js';
+import { initialProducts, filterProducts, getStockStatus, summarizeInventory, toCsv } from './data.js';
 
 const money = n => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(n);
 const API = import.meta.env.VITE_API_URL;
+
+const MOVEMENT_RANGES = {
+  '7d': { label: 'Last 7 days', amount: 7, unit: 'day', interval: 'day' },
+  '15d': { label: 'Last 15 days', amount: 15, unit: 'day', interval: 'day' },
+  '1m': { label: 'Last 1 month', amount: 1, unit: 'month', interval: 'week' },
+  '3m': { label: 'Last 3 months', amount: 3, unit: 'month', interval: 'week' },
+  '6m': { label: 'Last 6 months', amount: 6, unit: 'month', interval: 'month' },
+  '1y': { label: 'Last 1 year', amount: 1, unit: 'year', interval: 'month' },
+  '5y': { label: 'Last 5 years', amount: 5, unit: 'year', interval: 'year' }
+};
+
+function getLocalDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getMovementBucketStart(date, interval) {
+  const bucket = new Date(date);
+  bucket.setHours(0, 0, 0, 0);
+
+  if (interval === 'week') {
+    const daysSinceMonday = (bucket.getDay() + 6) % 7;
+    bucket.setDate(bucket.getDate() - daysSinceMonday);
+  } else if (interval === 'month') {
+    bucket.setDate(1);
+  } else if (interval === 'year') {
+    bucket.setMonth(0, 1);
+  }
+
+  return bucket;
+}
+
+function buildMovementChartData(movements, range) {
+  const config = MOVEMENT_RANGES[range];
+  if (!config) return [];
+
+  const now = new Date();
+  const start = new Date(now);
+
+  if (config.unit === 'day') {
+    start.setDate(start.getDate() - config.amount + 1);
+  } else if (config.unit === 'month') {
+    start.setMonth(start.getMonth() - config.amount);
+  } else {
+    start.setFullYear(start.getFullYear() - config.amount);
+  }
+  start.setHours(0, 0, 0, 0);
+
+  const buckets = new Map();
+  const cursor = getMovementBucketStart(start, config.interval);
+  const finalBucket = getMovementBucketStart(now, config.interval);
+
+  while (cursor <= finalBucket) {
+    const key = getLocalDateKey(cursor);
+    buckets.set(key, {
+      date: new Date(cursor),
+      inbound: 0,
+      outbound: 0
+    });
+
+    if (config.interval === 'day') {
+      cursor.setDate(cursor.getDate() + 1);
+    } else if (config.interval === 'week') {
+      cursor.setDate(cursor.getDate() + 7);
+    } else if (config.interval === 'month') {
+      cursor.setMonth(cursor.getMonth() + 1);
+    } else {
+      cursor.setFullYear(cursor.getFullYear() + 1);
+    }
+  }
+
+  movements.forEach((movement) => {
+    const movementDate = new Date(movement.createdAt);
+    if (
+      Number.isNaN(movementDate.getTime()) ||
+      movementDate < start ||
+      movementDate > now
+    ) {
+      return;
+    }
+
+    const bucketDate = getMovementBucketStart(movementDate, config.interval);
+    const bucket = buckets.get(getLocalDateKey(bucketDate));
+    if (!bucket) return;
+
+    const quantity = Number(movement.quantity) || 0;
+    if (quantity > 0) {
+      bucket.inbound += quantity;
+    } else if (quantity < 0) {
+      bucket.outbound += Math.abs(quantity);
+    }
+  });
+
+  return Array.from(buckets.values()).map((bucket) => {
+    let label;
+
+    if (config.interval === 'day' || config.interval === 'week') {
+      label = bucket.date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric'
+      });
+    } else if (config.interval === 'month') {
+      label = bucket.date.toLocaleDateString('en-US', {
+        month: 'short',
+        year: '2-digit'
+      });
+    } else {
+      label = String(bucket.date.getFullYear());
+    }
+
+    return {
+      label,
+      inbound: bucket.inbound,
+      outbound: bucket.outbound
+    };
+  });
+}
+
 
 function App() {
   const [products, setProducts] = useState(initialProducts);
@@ -20,6 +139,7 @@ function App() {
   const [modal, setModal] = useState(false);
   const [notice, setNotice] = useState('');
   const [mobileNav, setMobileNav] = useState(false);
+  const [movementRange, setMovementRange] = useState('7d');
   useEffect(() => {
     if (!API) return;
     let active = true;
@@ -36,7 +156,15 @@ function App() {
     return () => { active = false; };
   }, []);
   const summary = summarizeInventory(products);
-  const filtered = useMemo(() => filterProducts(products, { query, category, status }), [products, query, category, status]);
+  const filtered = useMemo(
+    () => filterProducts(products, { query, category, status }),
+    [products, query, category, status]
+  );
+  const movementChartData = useMemo(
+    () => buildMovementChartData(stockMovements, movementRange),
+    [stockMovements, movementRange]
+  );
+  const selectedMovementRange = MOVEMENT_RANGES[movementRange];
 
   async function request(path, options = {}) {
     if (!API) return null;
@@ -53,7 +181,8 @@ function App() {
 
   async function addProduct(event) {
     event.preventDefault();
-    const data = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const data = new FormData(form);
     const newProduct = {
       name: String(data.get('name')).trim(),
       sku: String(data.get('sku')).trim(),
@@ -73,7 +202,11 @@ function App() {
       setModal(false);
       setNotice(`${newProduct.name} added to inventory`);
       setPage('Products');
-      event.currentTarget.reset();
+      form.reset();
+      if (API) {
+        const movementPayload = await request('/stock-movements');
+        setStockMovements(movementPayload?.data ?? []);
+      }
     } catch (error) {
       setNotice(error.message);
     }
@@ -85,8 +218,10 @@ function App() {
     try {
       const saved = await request(`/api/products/${id}/stock`, { method: 'PATCH', body: JSON.stringify({ delta }) });
       setProducts(items => items.map(product => product.id === id ? { ...product, ...(saved?.data || { stock: current.stock + delta }) } : product));
-      if (API) { const movementPayload = await request('/stock-movements'); setStockMovements(movementPayload?.data ?? []); }
-      if (API) { const movementPayload = await request('/stock-movements'); setStockMovements(movementPayload?.data ?? []); }
+      if (API) {
+        const movementPayload = await request('/stock-movements');
+        setStockMovements(movementPayload?.data ?? []);
+      }
     } catch (error) {
       setNotice(error.message);
     }
@@ -140,10 +275,81 @@ function App() {
         {page === 'Historical game sales' ? <HistoricalGameSales api={API} setNotice={setNotice} /> : page === 'Overview' ? <>
           <div className="insight-banner"><div className="insight-symbol"><Zap size={19} fill="currentColor" /></div><div><strong>{summary.lowStock + summary.outOfStock ? 'A few products need attention.' : 'Your inventory is looking healthy.'}</strong><span>{summary.lowStock + summary.outOfStock ? `${summary.lowStock + summary.outOfStock} items are at or below their reorder point.` : 'All products are above their reorder points.'} <button onClick={() => { setPage('Products'); setStatus('Low stock'); }}>Review stock alerts <ArrowUpRight size={13} /></button></span></div><div className="banner-decoration">✳</div></div>
           <section className="stats-grid"><Stat label="Inventory value" value={money(summary.value)} change="+8.2%" up detail="sample portfolio data" icon={Boxes} accent="purple" /><Stat label="Units in stock" value={summary.units.toLocaleString()} change="Tracked" up detail="across the catalog" icon={Package} accent="mint" /><Stat label="Items needing attention" value={String(summary.lowStock + summary.outOfStock).padStart(2, '0')} change={summary.outOfStock ? `${summary.outOfStock} out of stock` : 'Reorder watch'} up={false} detail="low and empty stock" icon={Activity} accent="orange" /><Stat label="Products tracked" value={String(products.length).padStart(2, '0')} change="Catalog" up detail="products in workspace" icon={ChartNoAxesCombined} accent="blue" /></section>
-          <section className="analytics-grid"><div className="panel movement-panel"><div className="panel-heading"><div><h2>Inventory movement</h2><p>Stock received vs. stock dispatched · sample week</p></div><span className="select-button">Last 7 days <ChevronDown size={14} /></span></div><div className="chart-legend"><span><i className="legend-in" /> Stock in</span><span><i className="legend-out" /> Stock out</span><strong>Weekly view <ArrowUpRight size={14} /></strong></div><div className="chart-wrap"><ResponsiveContainer width="100%" height="100%"><AreaChart data={weeklyMovement} margin={{ top: 10, right: 4, left: -25, bottom: 0 }}><defs><linearGradient id="inFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a18bfa" stopOpacity={0.25} /><stop offset="100%" stopColor="#a18bfa" stopOpacity={0} /></linearGradient><linearGradient id="outFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#7ce7c1" stopOpacity={0.2} /><stop offset="100%" stopColor="#7ce7c1" stopOpacity={0} /></linearGradient></defs><CartesianGrid stroke="#eeeef4" vertical={false} strokeDasharray="4 5" /><XAxis dataKey="day" axisLine={false} tickLine={false} tick={{ fill: '#9999a9', fontSize: 11 }} dy={10} /><Tooltip contentStyle={{ borderRadius: 12, border: '1px solid #eeeef4', fontSize: 12 }} /><Area type="monotone" dataKey="inbound" name="Stock in" stroke="#9a83f6" strokeWidth={2.5} fill="url(#inFill)" /><Area type="monotone" dataKey="outbound" name="Stock out" stroke="#59d6ad" strokeWidth={2.5} fill="url(#outFill)" /></AreaChart></ResponsiveContainer></div></div>
+          <section className="analytics-grid">
+            <div className="panel movement-panel">
+              <div className="panel-heading">
+                <div>
+                  <h2>Inventory movement</h2>
+                  <p>Stock received vs. stock dispatched · {selectedMovementRange.label.toLowerCase()}</p>
+                </div>
+                <select
+                  className="select-button"
+                  aria-label="Select inventory movement time range"
+                  value={movementRange}
+                  onChange={(event) => setMovementRange(event.target.value)}
+                >
+                  {Object.entries(MOVEMENT_RANGES).map(([value, option]) => (
+                    <option key={value} value={value}>{option.label}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="chart-legend">
+                <span><i className="legend-in" /> Stock in</span>
+                <span><i className="legend-out" /> Stock out</span>
+                <strong>
+                  {selectedMovementRange.interval === 'day' ? 'Daily view' :
+                    selectedMovementRange.interval === 'week' ? 'Weekly view' :
+                      selectedMovementRange.interval === 'month' ? 'Monthly view' : 'Yearly view'}
+                  <ArrowUpRight size={14} />
+                </strong>
+              </div>
+              {movementChartData.some((item) => item.inbound > 0 || item.outbound > 0) ? (
+                <div className="chart-wrap">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={movementChartData} margin={{ top: 10, right: 4, left: -25, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="inFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#a18bfa" stopOpacity={0.25} />
+                          <stop offset="100%" stopColor="#a18bfa" stopOpacity={0} />
+                        </linearGradient>
+                        <linearGradient id="outFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="#7ce7c1" stopOpacity={0.2} />
+                          <stop offset="100%" stopColor="#7ce7c1" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid stroke="#eeeef4" vertical={false} strokeDasharray="4 5" />
+                      <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{ fill: '#9999a9', fontSize: 11 }} dy={10} />
+                      <Tooltip contentStyle={{ borderRadius: 12, border: '1px solid #eeeef4', fontSize: 12 }} />
+                      <Area type="monotone" dataKey="inbound" name="Stock in" stroke="#9a83f6" strokeWidth={2.5} fill="url(#inFill)" />
+                      <Area type="monotone" dataKey="outbound" name="Stock out" stroke="#59d6ad" strokeWidth={2.5} fill="url(#outFill)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              ) : (
+                <div className="empty-state">No inventory movements recorded during this period.</div>
+              )}
+            </div>
           <div className="panel alerts-panel"><div className="panel-heading"><div><h2>Needs attention <span className="tiny-count">{summary.lowStock + summary.outOfStock}</span></h2><p>Keep the next stockout off the schedule</p></div><button className="round-arrow" aria-label="View products" onClick={() => { setPage('Products'); setStatus('Low stock'); }}><ArrowUpRight size={17} /></button></div><div className="alert-list">{products.filter(p => getStockStatus(p) !== 'In stock').slice(0, 4).map(product => <div className="alert-row" key={product.id}><div className="product-glyph violet"><Package size={17} /></div><div className="alert-product"><strong>{product.name}</strong><small>{product.sku}</small></div><div className="alert-qty"><strong>{product.stock} left</strong><span className={product.stock === 0 ? 'status-out' : 'status-low'}>{getStockStatus(product)}</span></div></div>)}{summary.lowStock + summary.outOfStock === 0 && <div className="empty-state compact">No stock alerts right now. Nice work.</div>}</div><button className="text-link" onClick={() => { setPage('Products'); setStatus('Low stock'); }}>View stock alerts <ArrowUpRight size={14} /></button></div></section>
           <section className="panel products-panel"><div className="panel-heading product-panel-heading"><div><h2>Product overview</h2><p>A quick look at your catalog</p></div><button className="text-link" onClick={() => setPage('Products')}>View all products <ArrowUpRight size={14} /></button></div><ProductTable products={products.slice(0, 5)} onStock={adjustStock} /></section>
-        </> : page === 'Sales' ? <SalesDashboard sales={sales} setSales={setSales} api={API} setNotice={setNotice} onInventorySync={async () => { const [p, m] = await Promise.all([request('/products'), request('/stock-movements')]); setProducts(p.data); setStockMovements(m.data); }} /> : <section className="panel full-products"><div className="panel-heading"><div><h2>{page === 'Products' ? 'Product catalog' : page}</h2><p>{page === 'Products' ? 'Search your catalog, review stock, and make updates.' : 'This workspace area is planned for the next release.'}</p></div><span className="total-tag">{products.length} products</span></div>{page === 'Products' ? <><div className="table-toolbar"><div className="search-box"><Search size={16} /><input aria-label="Search products" placeholder="Search products, SKU..." value={query} onChange={event => setQuery(event.target.value)} />{query && <button onClick={() => setQuery('')} aria-label="Clear search"><X size={14} /></button>}</div><div className="filter-controls"><SlidersHorizontal size={15} /><select aria-label="Filter by category" value={category} onChange={event => setCategory(event.target.value)}><option>All categories</option>{[...new Set(products.map(product => product.category))].map(item => <option key={item}>{item}</option>)}</select><select aria-label="Filter by status" value={status} onChange={event => setStatus(event.target.value)}><option>All items</option><option>In stock</option><option>Low stock</option><option>Out of stock</option></select></div></div><ProductTable products={filtered} onStock={adjustStock} onDelete={deleteProduct} />{filtered.length === 0 && <div className="empty-state">No products match those filters. Try a different search.</div>}</> : <div className="coming-soon"><div className="coming-icon"><Sparkles size={24} /></div><h3>More visibility. Less busywork.</h3><p>Supplier workflows and stock movement history are planned for the next release.</p><button className="btn btn-primary" onClick={() => setPage('Overview')}>Back to overview</button></div>}</section>}
+        </> : page === 'Sales' ? (
+          <SalesDashboard
+            sales={sales}
+            setSales={setSales}
+            api={API}
+            setNotice={setNotice}
+            onInventorySync={async () => {
+              const [p, m] = await Promise.all([
+                request('/products'),
+                request('/stock-movements')
+              ]);
+              setProducts(p.data);
+              setStockMovements(m.data);
+            }}
+          />
+        ) : page === 'Stock movements' ? (
+          <StockMovementTable movements={stockMovements} />
+        ) : (
+          <section className="panel full-products"><div className="panel-heading"><div><h2>{page === 'Products' ? 'Product catalog' : page}</h2><p>{page === 'Products' ? 'Search your catalog, review stock, and make updates.' : 'This workspace area is planned for the next release.'}</p></div><span className="total-tag">{products.length} products</span></div>{page === 'Products' ? <><div className="table-toolbar"><div className="search-box"><Search size={16} /><input aria-label="Search products" placeholder="Search products, SKU..." value={query} onChange={event => setQuery(event.target.value)} />{query && <button onClick={() => setQuery('')} aria-label="Clear search"><X size={14} /></button>}</div><div className="filter-controls"><SlidersHorizontal size={15} /><select aria-label="Filter by category" value={category} onChange={event => setCategory(event.target.value)}><option>All categories</option>{[...new Set(products.map(product => product.category))].map(item => <option key={item}>{item}</option>)}</select><select aria-label="Filter by status" value={status} onChange={event => setStatus(event.target.value)}><option>All items</option><option>In stock</option><option>Low stock</option><option>Out of stock</option></select></div></div><ProductTable products={filtered} onStock={adjustStock} onDelete={deleteProduct} />{filtered.length === 0 && <div className="empty-state">No products match those filters. Try a different search.</div>}</> : <div className="coming-soon"><div className="coming-icon"><Sparkles size={24} /></div><h3>More visibility. Less busywork.</h3><p>Supplier workflows and stock movement history are planned for the next release.</p><button className="btn btn-primary" onClick={() => setPage('Overview')}>Back to overview</button></div>}</section>)}
         <footer className="footer"><span>© 2026 StockPilot</span><span><i /> Inventory intelligence, in your corner.</span><span>Built for momentum <span className="footer-heart">✳</span></span></footer>
       </div>
     </main>
@@ -151,8 +357,6 @@ function App() {
     {notice && <div className="toast" role="status"><span className="toast-check">✓</span>{notice}<button onClick={() => setNotice('')} aria-label="Dismiss notification"><X size={15} /></button></div>}
   </div>;
 }
-
-
 
 function StockMovementTable({ movements }) {
   return <section className="panel full-products">
@@ -290,7 +494,7 @@ function Stat({ label, value, change, up, detail, icon: Icon, accent }) {
 }
 
 function ProductTable({ products, onStock, onDelete }) {
-  return <div className="table-scroll"><table><thead><tr><th>PRODUCT</th><th>CATEGORY</th><th>UNIT PRICE</th><th>STOCK LEVEL</th><th>STATUS</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{products.map(product => <tr key={product.id}><td><div className="table-product"><div className="product-glyph violet"><Package size={17} /></div><div><strong>{product.name}</strong><small>{product.sku}</small></div></div></td><td><span className="category-label">{product.category}</span></td><td className="price-cell">{money(Number(product.price))}</td><td><div className="stock-level"><div className="stock-track"><span className={product.stock === 0 ? 'empty' : product.stock <= product.reorderAt ? 'low' : ''} style={{ width: `${Math.min(100, product.stock / Math.max(product.reorderAt * 3, 1) * 100)}%` }} /></div><span>{product.stock} units</span><div className="stock-actions"><button aria-label={`Decrease ${product.name} stock`} onClick={() => onStock(product.id, -1)} disabled={product.stock === 0}>−</button><button aria-label={`Increase ${product.name} stock`} onClick={() => onStock(product.id, 1)}>+</button></div></div></td><td><span className={`status-pill ${product.stock === 0 ? 'out' : product.stock <= product.reorderAt ? 'low' : 'good'}`}><i />{getStockStatus(product)}</span></td><td>{onDelete && <button className="icon-btn row-delete" aria-label={`Delete ${product.name}`} onClick={() => { if (window.confirm(`Remove ${product.name} from inventory?`)) onDelete(product.id); }}><Ellipsis size={18} /></button>}</td></tr>)}</tbody></table></div>;
+  return <div className="table-scroll"><table><thead><tr><th>PRODUCT</th><th>CATEGORY</th><th>UNIT PRICE</th><th>STOCK LEVEL</th><th>STATUS</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{products.map(product => <tr key={product.id}><td><div className="table-product"><div className="product-glyph violet"><Package size={17} /></div><div><strong>{product.name}</strong><small>{product.sku}</small></div></div></td><td><span className="category-label">{product.category}</span></td><td className="price-cell">{money(Number(product.price))}</td><td><div className="stock-level"><div className="stock-track"><span className={product.stock === 0 ? 'empty' : product.stock <= product.reorderAt ? 'low' : ''} style={{ width: `${Math.min(100, product.stock / Math.max(product.reorderAt * 3, 1) * 100)}%` }} /></div><span>{product.stock} units</span><div className="stock-actions"><button aria-label={`Decrease ${product.name} stock`} onClick={() => onStock(product.id, -1)} disabled={product.stock === 0}>−</button><button aria-label={`Increase ${product.name} stock`} onClick={() => onStock(product.id, 1)}>+</button></div></div></td><td><span className={`status-pill ${product.stock === 0 ? 'out' : product.stock <= product.reorderAt ? 'low' : 'good'}`}><i />{getStockStatus(product)}</span></td><td>{onDelete && <button className="icon-btn row-delete" aria-label={`Delete ${product.name}`} onClick={() => { if (window.confirm(`Remove ${product.name} from inventory?`)) onDelete(product.id); }}><Trash2 size={17} /></button>}</td></tr>)}</tbody></table></div>;
 }
 
 export default App;
