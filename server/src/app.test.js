@@ -40,7 +40,7 @@ function fixture() {
       updateMany: async ({ where, data }) => {
         const item = items.find(entry => entry.id === where.id && entry.stock >= where.stock.gte);
         if (!item) return { count: 0 };
-        item.stock += data.stock.decrement;
+        item.stock -= data.stock.decrement;
         return { count: 1 };
       },
       delete: async ({ where }) => { const index = items.findIndex(item => item.id === where.id); if (index < 0) throw Object.assign(new Error('not found'), { code: 'P2025' }); if (movements.some(move => move.productId === where.id)) throw Object.assign(new Error('restricted'), { code: 'P2003' }); items.splice(index, 1); }
